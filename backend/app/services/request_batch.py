@@ -59,21 +59,44 @@ class RequestBatchService(BaseModuleService):
                 break
 
     def _enqueue_retry(self, batch: dict):
-        """失败请求自动创建重放任务。"""
+        """失败请求自动创建重放任务。
+
+        批次只知道“部分失败”的总数，不知道失败分段。这里只登记一条批次汇总凭据，
+        按批次幂等；真正按分段派发的凭据由 batch_replay 依据采集回执生成，
+        汇总凭据在收到回执后会被分段凭据接管，不会再造成同一请求的重复派发。
+        """
         retry_rows = store.rows("retry_queue")
         bid = str(batch["id"]).zfill(4)
-        retry_rows.append({
+        task_no = f"RETR-BATCH-{bid}"
+        existing = next(
+            (row for row in retry_rows if str(row.get("任务编号", "")) == task_no),
+            None,
+        )
+        if existing is not None:
+            existing["批次记录ID"] = batch["id"]
+            existing["失败数量"] = batch.get("失败数量", 0)
+            return existing
+        entry = {
             "id": max((int(r.get("id", 0)) for r in retry_rows), default=0) + 1,
-            "任务编号": f"RETR-BATCH-{bid}",
+            "任务编号": task_no,
             "失败端点": batch.get("关联端点", ""),
             "失败原因": f"批次{bid}含{batch.get('失败数量', 0)}条失败",
             "重试次数": 0,
             "最大重试": 3,
             "退避策略": "exponential:2s/baseline",
             "最后重试": "",
-            "队列状态": "等待",
+            "队列状态": "批次汇总待回执",
+            "凭据类型": "批次汇总",
+            "批次记录ID": batch["id"],
+            "批次编号": batch.get("批次编号", ""),
+            "失败数量": batch.get("失败数量", 0),
+            "待补范围": [],
+            "已恢复范围": [],
+            "派发次数": 0,
             "status": "待重试", "pending": True, "abnormal": False,
-        })
+        }
+        retry_rows.append(entry)
+        return entry
 
     def check_batch_throughput(self, endpoint_id: str) -> dict:
         """跨模块吞吐量分析：汇总调用日志+重放队列+缓存的健康度。"""

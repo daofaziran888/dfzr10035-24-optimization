@@ -55,6 +55,7 @@ npm run dev
 | 接口定义 | `endpoint_def` | 接口端点 | 端点编号、提供方、请求路径 |
 | 限流熔断 | `rate_limit` | 限流策略 | 策略编号、目标端点、QPS上限 |
 | 请求批次 | `request_batch` | 调用批次 | 批次编号、关联端点、参数模板 |
+| 批次重放 | `batch_replay` | 批次重放 | 回执去重、失败分段凭据、中断恢复、范围核对 |
 | 响应解析 | `response_parse` | 解析规则 | 规则编号、目标端点、JSON路径 |
 | Schema差异 | `schema_diff` | 差异记录 | 记录编号、关联端点、变更字段 |
 | 结果缓存 | `data_cache` | 缓存策略 | 策略编号、目标端点、缓存TTL |
@@ -72,6 +73,27 @@ npm run dev
 | 抽样校验 | `sample_check` | 抽样计划 | 计划编号、目标端点、抽样比例 |
 | 用量计费 | `cost_account` | 用量账单 | 账单编号、提供方、计费周期 |
 | 任务调度 | `task_schedule` | 调度计划 | 计划编号、关联端点、Cron表达式 |
+
+## 批次重放与回执去重
+
+请求批次部分失败时，采集端会回送按“采集分段”划分的回执。`backend/app/services/batch_replay.py`
+把回执台账（`batch_receipt`）与重放凭据（`retry_queue` 中 `凭据类型=失败分段`）分开保存：
+
+- **按 (批次, 分段) 形成凭据**，不按端点合并，同一端点上的两个真实缺口各自一个任务；
+- **重复回执去重**：同一回执号重复到达、或未带回执号时同内容再次提交，都只累加
+  `投递次数` 并追加 `投递记录`，不新增待处理记录；不同来源的记录都保留；
+- **同一分段重送**：历史回执继续作有效来源证据，失败请求按请求编号去重；
+  同一条回执里原因相同的多个独立失败仍各占一个编号、各有恢复机会；
+- **中断与恢复**：`resume` 只依据历史回执重建待补范围，已派发覆盖的部分不会重复派发；
+- **覆盖回写**：派发结果回写 `request_batch` 的请求/完成/失败数量，核对接口能对平
+  回执、凭据与批次三份数据；
+- 旧版按端点汇总的 `RETR-BATCH-*` 任务只保留历史来源，被分段凭据接管，不再派发。
+
+接口（均在 `/api/batch-replay` 下）：`POST /receipts`、`POST /receipts/batch`、
+`GET /receipts`、`GET /credentials`、`GET /events`、`POST /dispatch`、
+`POST /interrupt`、`POST /resume`、`GET /reconciliation`、`GET /snapshot`；
+跨模块链路入口为 `GET /api/chain/batch-recovery?batch_id=...`。
+前端对应页面为“批次重放”（`frontend/src/views/BatchReplayView.vue`）。
 
 ## 约定
 

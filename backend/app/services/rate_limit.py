@@ -88,9 +88,15 @@ class RateLimitService(BaseModuleService):
         })
 
     def _on_circuit_restore(self, limit: dict):
-        """恢复后清理关联重放任务并刷新缓存状态。"""
+        """恢复后清理关联重放任务并刷新缓存状态。
+
+        失败分段凭据不能在端点恢复时被当成已恢复：它的待补范围必须由回执覆盖
+        或显式派发来消除，否则会对不上实际采集范围。
+        """
         endpoint = limit.get("目标端点", "")
         for retry in store.rows("retry_queue"):
+            if retry.get("凭据类型") == "失败分段":
+                continue
             if retry.get("失败端点") == endpoint and retry.get("status") == "待重试":
                 retry["status"] = "已成功"
                 retry["pending"] = False

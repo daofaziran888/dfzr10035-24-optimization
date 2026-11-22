@@ -95,6 +95,13 @@ def chain_recovery_rate():
     return RetryQueueService().calc_recovery_rate()
 
 
+@app.get("/api/chain/batch-recovery")
+def chain_batch_recovery(batch_id: str):
+    """链路8b：批次回执去重与失败分段重放核对（跨 request_batch/retry_queue/call_log）"""
+    from app.services.batch_replay import batch_replay
+    return batch_replay.reconciliation(batch_id)
+
+
 @app.get("/api/chain/subscription-chain")
 def chain_subscription_chain(topic: str):
     """链路9：订阅链路（跨 subscriber/webhook_router/data_version/data_cache/data_delivery）"""

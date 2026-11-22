@@ -16,7 +16,15 @@ class RetryQueueService(BaseModuleService):
     NEGATIVE_ACTIONS = []
 
     def run_action(self, entry_id: int, action: str):
-        """重试中/已成功时联动写调用日志和更新监控；永久失败时触发告警。"""
+        """重试中/已成功时联动写调用日志和更新监控；永久失败时触发告警。
+
+        失败分段凭据的“手动重试”按凭据的实际待补范围派发，不按端点合并；
+        批次汇总凭据只保留历史来源，转入重试时提示以分段凭据为准。
+        """
+        entry = store.find(self.MODULE, entry_id)
+        if entry is not None and entry.get("凭据类型") == "失败分段":
+            return self._run_segment_action(entry, action)
+
         entry, message = super().run_action(entry_id, action)
         if entry is None:
             return entry, message
@@ -30,6 +38,40 @@ class RetryQueueService(BaseModuleService):
             self._trigger_alert(entry)
             message += "，已触发监控告警"
         return entry, message
+
+    def _run_segment_action(self, entry: dict, action: str):
+        """失败分段凭据的派发/确认走 batch_replay，保证按分段而不是按端点处理。"""
+        from app.services.batch_replay import batch_replay
+
+        batch = store.find("request_batch", int(entry.get("批次记录ID", 0)))
+        if batch is None:
+            return None, f"重放任务 {entry.get('任务编号', '')} 关联的批次已不存在"
+        segment = str(entry.get("分段编号", ""))
+
+        if action in ("加入队列", "手动重试"):
+            if not entry.get("待补范围"):
+                return entry, f"失败分段{segment}没有待补范围，重复回执不会重复派发"
+            result = batch_replay.dispatch(batch.get("批次编号", batch["id"]), segment_ids=[segment])
+            if not result.get("ok"):
+                return None, result.get("message", "派发失败")
+            credential = next(
+                (row for row in store.rows(self.MODULE)
+                 if row.get("任务编号") == entry.get("任务编号")),
+                entry,
+            )
+            self._update_monitor_health(credential)
+            return credential, (
+                f"失败分段{segment}已按实际缺口派发"
+                f"{result.get('dispatched_requests', 0)}项，批次统计已回写"
+            )
+        if action == "标记失败":
+            entry["status"] = "永久失败"
+            entry["pending"] = False
+            entry["abnormal"] = True
+            entry["队列状态"] = "永久失败"
+            self._trigger_alert(entry)
+            return entry, f"失败分段{segment}已标记永久失败，已触发监控告警"
+        return None, f"动作「{action}」不属于失败分段凭据可执行范围"
 
     def _log_retry_start(self, task: dict):
         log_rows = store.rows("call_log")

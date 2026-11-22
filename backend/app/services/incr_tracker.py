@@ -58,11 +58,18 @@ class IncrTrackerService(BaseModuleService):
             tracker["最后同步"] = "2026-11-17"
 
     def _sync_retry_queue_hook(self, tracker: dict):
-        """回溯重放队列中关联此端点的任务。"""
+        """回溯重放队列中关联此端点的任务。
+
+        失败分段凭据只加一个追踪挂钩标记，不覆盖其队列状态与待补范围。
+        """
         endpoint = tracker.get("目标端点", "")
         for retry in store.rows("retry_queue"):
-            if retry.get("失败端点") == endpoint and retry.get("status") == "待重试":
-                retry["队列状态"] = f"tracker_hook:{tracker.get('增量字段', '')}"
+            if retry.get("失败端点") != endpoint or retry.get("status") != "待重试":
+                continue
+            if retry.get("凭据类型") == "失败分段":
+                retry["追踪挂钩"] = f"tracker_hook:{tracker.get('增量字段', '')}"
+                continue
+            retry["队列状态"] = f"tracker_hook:{tracker.get('增量字段', '')}"
 
     def _trigger_govern_and_retry(self, tracker: dict):
         """追踪异常触发治理报告和重放任务。"""
